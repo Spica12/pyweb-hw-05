@@ -1,11 +1,11 @@
 import asyncio
 import logging
+
+import httpx
 import websockets
 import names
 from websockets import WebSocketServerProtocol
 from websockets.exceptions import ConnectionClosedOK
-
-from main import get_exchange_rate
 
 logging.basicConfig(level=logging.INFO)
 
@@ -37,7 +37,32 @@ class Server:
 
     async def distrubute(self, ws: WebSocketServerProtocol):
         async for message in ws:
-            await self.send_to_clients(f"{ws.name}: {message}")
+            if message == 'exchange':
+                exchange = await get_exchange()
+                await self.send_to_clients(exchange)
+            elif message == 'Hello server':
+                await self.send_to_clients('Hello from server!')
+            else:
+                await self.send_to_clients(f"{ws.name}: {message}")
+
+
+async def request(url: str):
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url)
+        if r.status_code == 200:
+            result = r.json()
+            return result
+        else:
+            return "Error! I don't know!"
+
+
+async def get_exchange():
+
+    response = await request(
+        f"https://api.privatbank.ua/p24api/pubinfo?exchange&coursid=5"
+    )
+
+    return str(response)
 
 
 async def main():
