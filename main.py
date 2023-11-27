@@ -1,12 +1,15 @@
 import asyncio
+import datetime
 import logging
 import sys
-import datetime
+from pprint import pprint
 
 import aiohttp
+import names
+import websockets
 from aiopath import AsyncPath
-
-from pprint import pprint
+from websockets import WebSocketServerProtocol
+from websockets.exceptions import ConnectionClosedOK
 
 BASE_DIR = AsyncPath()
 LOG_FILE_NAME = "logs.txt"
@@ -18,12 +21,53 @@ class HttpError(Exception):
     pass
 
 
+class Server:
+    clients = set()
+
+    async def register(self, ws: WebSocketServerProtocol):
+        ws.name = names.get_full_name()
+        self.clients.add(ws)
+        logging.info(f"{ws.remote_address} connects")
+
+    async def unregister(self, ws: WebSocketServerProtocol):
+        self.clients.remove(ws)
+        logging.info(f"{ws.remote_address} disconnects")
+
+    async def send_to_clients(self, message: str):
+        if self.clients:
+            [await client.send(message) for client in self.clients]
+
+    async def ws_handler(self, ws: WebSocketServerProtocol):
+        await self.register(ws)
+        try:
+            await self.distrubute(ws)
+        except ConnectionClosedOK:
+            pass
+        finally:
+            await self.unregister(ws)
+
+    async def distrubute(self, ws: WebSocketServerProtocol):
+        async for message in ws:
+            if message.lower().startswith("exchange"):
+                days, user_currencies = parse_argv(message.split())
+
+                if days:
+                    result = await get_exchange_rate(days, user_currencies)
+                else:
+                    result = await get_exchange_rate(1, user_currencies)
+
+                await self.send_to_clients(f"Server:\n{(result)}")
+            else:
+                await self.send_to_clients(f"{ws.name}: {message}")
+
+
 async def request(url: str):
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(url) as resp:
                 if resp.status == 200:
-                    result = await resp.json()
+                    result = await resp.json()  
+
                     return result
                 else:
                     raise HttpError(f"Error status: {resp.status} for {url}")
@@ -81,14 +125,14 @@ async def get_exchange_rate(days: int, user_currencies: list):
     return result
 
 
-def parse_argv():
-    logger.debug(sys.argv)
+def parse_argv(argv):
+    logger.debug(argv)
 
     days = None
-    currencies = []
+    user_currencies = []
 
-    if len(sys.argv) > 1:
-        days = int(sys.argv[1])
+    if len(argv) > 1:
+        days = int(argv[1])
         logger.info(f"How many days user want to get exchange rates: {days} days")
 
         if days >= 10:
@@ -96,19 +140,27 @@ def parse_argv():
             days = 10
             logger.info(f"User's request changed to {days} days")
 
-    if len(sys.argv) > 2:
-        user_currencies = sys.argv[2:]
+    if len(argv) > 2:
+        user_currencies = argv[2:]
         logger.info(f"User currencies: {user_currencies}")
 
     return days, user_currencies
 
 
+async def run_server():
+    server = Server()
+    async with websockets.serve(server.ws_handler, "localhost", 8080):
+        await asyncio.Future()  # run forever
+
+
 async def main():
-    days, user_currencies = parse_argv()
+    days, user_currencies = parse_argv(sys.argv)
 
     if days:
         exchange_rate = await get_exchange_rate(days, user_currencies)
         pprint(exchange_rate)
+    else:
+        await run_server()
 
 
 if __name__ == "__main__":
@@ -122,7 +174,7 @@ if __name__ == "__main__":
     path_logs = BASE_DIR / LOG_FILE_NAME
 
     ch = logging.StreamHandler()
-    ch.setLevel(logging.ERROR)
+    ch.setLevel(logging.DEBUG)
     ch.setFormatter(formatter)
 
     logger.addHandler(ch)
@@ -131,4 +183,4 @@ if __name__ == "__main__":
 
     asyncio.run(main())
 
-    print('----- Finish -----')
+    print("----- Finish -----")
